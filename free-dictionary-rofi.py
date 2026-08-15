@@ -13,27 +13,43 @@ import requests
 API_BASE = "https://api.dictionaryapi.dev/api/v2/entries/en"
 MAX_HISTORY = 200
 PAGE_SIZE = 7
+REQUEST_HEADERS = {"User-Agent": "free-dictionary-rofi/1.1"}
 
 HISTORY_FILE = Path.home() / ".local" / "share" / "free-dictionary-rofi" / "history.txt"
-ROFI_BASE = ["rofi", "-dmenu", "-i", "-matching", "fuzzy"]
+
+# Dynamic Noctalia Theme Override
+ROFI_THEME_OVERRIDE = (
+    '@import "~/.config/rofi/noctalia.rasi"\n'
+    "* { font: \"Iosevka Nerd Font 13\"; }\n"
+    "window { transparency: \"real\"; width: 850px; border: 2px; border-radius: 9px; border-color: @border; background-color: #161306CC; padding: 16px; }\n"
+    "mainbox { background-color: transparent; spacing: 10px; }\n"
+    "inputbar { border-radius: 100%; }\n" # <--- This makes the search area cylindrical
+    "textbox { text-color: @fg; background-color: transparent; padding: 4px; }\n"
+    "listview { columns: 1; lines: 8; spacing: 5px; background-color: transparent; }\n"
+    "element { border: 1px; border-radius: 6px; border-color: transparent; padding: 6px 10px; background-color: transparent; text-color: @fg; }\n"
+    "element selected.normal { background-color: @accent; text-color: @accent-fg; border-color: @accent; }\n"
+    "element-text { text-color: inherit; background-color: transparent; }\n"
+)
+ROFI_BASE = ["rofi", "-dmenu", "-i", "-matching", "fuzzy", "-theme-str", ROFI_THEME_OVERRIDE]
 
 
 def normalize(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+def as_text(value: Any) -> str:
+    return normalize(value) if isinstance(value, str) else ""
+
+
 def show_message(message: str) -> None:
-    theme_override = (
-        "window { width: 980px; background-color: #111111DD; border: 2px; "
-        "border-color: #66d9ef; padding: 10px; }"
-        "mainbox { background-color: transparent; }"
-        "textbox { text-color: #f8f8f2; background-color: transparent; }"
-    )
-    subprocess.run(
-        ["rofi", "-theme-str", theme_override, "-e", message],
-        text=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["rofi", "-theme-str", ROFI_THEME_OVERRIDE, "-e", message],
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        print(message, file=sys.stderr)
 
 
 def run_rofi(prompt: str, items: List[str], allow_custom: bool = True) -> Optional[str]:
@@ -41,14 +57,43 @@ def run_rofi(prompt: str, items: List[str], allow_custom: bool = True) -> Option
     if not allow_custom:
         cmd.append("-no-custom")
 
-    proc = subprocess.run(
-        cmd + ["-p", prompt],
-        input="\n".join(items),
-        text=True,
-        capture_output=True,
-    )
+    try:
+        proc = subprocess.run(
+            cmd + ["-p", prompt],
+            input="\n".join(items),
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        show_message("rofi is not installed or is not available in PATH.")
+        return None
+
     choice = proc.stdout.strip()
     return choice or None
+
+
+def run_rofi_index(prompt: str, items: List[str]) -> Optional[int]:
+    try:
+        proc = subprocess.run(
+            ROFI_BASE + ["-no-custom", "-format", "i", "-p", prompt],
+            input="\n".join(items),
+            text=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        show_message("rofi is not installed or is not available in PATH.")
+        return None
+
+    choice = proc.stdout.strip()
+    if not choice:
+        return None
+
+    try:
+        idx = int(choice)
+    except ValueError:
+        return None
+
+    return idx if 0 <= idx < len(items) else None
 
 
 def load_history() -> List[str]:
@@ -98,7 +143,7 @@ def save_history(term: str) -> None:
 def fetch_entries(term: str) -> List[Dict[str, Any]]:
     url = f"{API_BASE}/{quote(term)}"
     try:
-        resp = requests.get(url, timeout=12)
+        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=12)
     except requests.RequestException as exc:
         show_message(f"Network error:\n\n{exc}")
         return []
@@ -108,8 +153,13 @@ def fetch_entries(term: str) -> List[Dict[str, Any]]:
 
     try:
         resp.raise_for_status()
+    except requests.HTTPError as exc:
+        show_message(f"Dictionary API error ({resp.status_code}):\n\n{exc}")
+        return []
+
+    try:
         data = resp.json()
-    except Exception as exc:
+    except ValueError as exc:
         show_message(f"Failed to parse dictionary response:\n\n{exc}")
         return []
 
@@ -123,9 +173,9 @@ def build_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
     for entry in entries:
-        word = str(entry.get("word", "")).strip()
-        phonetic = str(entry.get("phonetic", "")).strip()
-        origin = str(entry.get("origin", "")).strip()
+        word = as_text(entry.get("word"))
+        phonetic = as_text(entry.get("phonetic"))
+        origin = as_text(entry.get("origin"))
         phonetics = entry.get("phonetics", [])
         meanings = entry.get("meanings", [])
 
@@ -136,7 +186,7 @@ def build_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if not isinstance(meaning, dict):
                 continue
 
-            pos = str(meaning.get("partOfSpeech", "")).strip()
+            pos = as_text(meaning.get("partOfSpeech"))
             definitions = meaning.get("definitions", [])
 
             if not isinstance(definitions, list):
@@ -146,8 +196,8 @@ def build_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if not isinstance(definition_block, dict):
                     continue
 
-                definition = normalize(str(definition_block.get("definition", "")))
-                example = normalize(str(definition_block.get("example", "")))
+                definition = as_text(definition_block.get("definition"))
+                example = as_text(definition_block.get("example"))
                 synonyms = definition_block.get("synonyms", [])
                 antonyms = definition_block.get("antonyms", [])
 
@@ -192,7 +242,7 @@ def format_detail(row: Dict[str, Any]) -> str:
     def fmt_list(label: str, items: Any, limit: int = 8) -> List[str]:
         if not isinstance(items, list):
             return []
-        cleaned = [str(x).strip() for x in items if str(x).strip()]
+        cleaned = [normalize(str(x)) for x in items if x is not None and normalize(str(x))]
         if not cleaned:
             return []
         shown = cleaned[:limit]
@@ -237,6 +287,10 @@ def page_menu_items(rows: List[Dict[str, Any]], page: int) -> List[str]:
     return items
 
 
+def total_pages(item_count: int) -> int:
+    return max(1, (item_count + PAGE_SIZE - 1) // PAGE_SIZE)
+
+
 def choose_term() -> Optional[str]:
     if len(sys.argv) > 1:
         args = sys.argv[1:]
@@ -279,28 +333,29 @@ def main() -> int:
 
     while True:
         menu_items = page_menu_items(rows, page)
-        choice = run_rofi(f"Free Dictionary ({page + 1})", menu_items, allow_custom=False)
-        if choice is None:
+        choice_idx = run_rofi_index(
+            f"Free Dictionary ({page + 1}/{total_pages(len(rows))})",
+            menu_items,
+        )
+        if choice_idx is None:
             return 0
 
         chunk = page_rows(rows, page)
+        nav_idx = len(chunk)
 
-        if choice == "◀ Previous page":
+        if page > 0 and choice_idx == nav_idx:
             page = max(0, page - 1)
             continue
 
-        if choice == "Next page ▶":
+        if (page + 1) * PAGE_SIZE < len(rows) and choice_idx == nav_idx + (1 if page > 0 else 0):
             if (page + 1) * PAGE_SIZE < len(rows):
                 page += 1
             continue
 
-        expected = [format_row(row) for row in chunk]
-        try:
-            idx = expected.index(choice)
-        except ValueError:
+        if choice_idx >= len(chunk):
             return 0
 
-        show_message(format_detail(chunk[idx]))
+        show_message(format_detail(chunk[choice_idx]))
         return 0
 
 
