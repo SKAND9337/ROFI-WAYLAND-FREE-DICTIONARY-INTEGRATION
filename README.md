@@ -27,6 +27,12 @@ Integrates Free Dictionary search in rofi(-wayland) using python accessible thro
 5. Enjoy
 
 ----------------------------------------------------------------
+## IMPORTANT: 
+The final look depends heavily on noctalia color scheme!!
+If it doesn't work due to theme errors, disable the shown block by commenting it out:
+<img width="1761" height="370" alt="image" src="https://github.com/user-attachments/assets/d0f9355b-7133-44b6-a72a-48f0787f1c2c" />
+
+----------------------------------------------------------------
 Search History is saved at `~/.local/share/free-dictionary-rofi/history.txt`
 Recommended to symlink somewhere easier to access, it also appears in rofi when free dictionary script is ran.
 
