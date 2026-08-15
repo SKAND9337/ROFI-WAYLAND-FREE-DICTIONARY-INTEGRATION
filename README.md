@@ -1,4 +1,4 @@
-# ROFI-WAYLAND-FREE-DICTIONARY-INTEGRATION
+# ROFI-FREE-DICTIONARY-INTEGRATION
 NOTE: Collaborative vibe-coding effort between ChatGPT and Gemini
 -----------------------------------------------------------------
 
@@ -9,7 +9,7 @@ Integrates Free Dictionary search in rofi(-wayland) using python accessible thro
 1. Install dependencies:
       `rofi-wayland`, `python-requests`, `python`
       > 1.1. On ARCH LINUX (and based) systems:
-      `sudo pacman -S python-requests rofi-wayland python`
+      `sudo pacman -S python-requests rofi python`
    
 2. Download and place the script as following:
       `~/.local/bin/free-dictionary-rofi.py`
