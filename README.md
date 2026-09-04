@@ -34,6 +34,7 @@ If it doesn't work due to theme errors, disable the shown block by commenting it
 
 ----------------------------------------------------------------
 Search History is saved at `~/.local/share/free-dictionary-rofi/history.txt`
+If Free Dictionary API fails, it falls back to Wikitionary.
 Recommended to symlink somewhere easier to access, it also appears in rofi when free dictionary script is ran.
 
 ----------------------------------------------
