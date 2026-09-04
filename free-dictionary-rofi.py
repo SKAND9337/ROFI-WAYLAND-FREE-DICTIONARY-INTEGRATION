@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import html
+import json
+import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -13,9 +17,10 @@ import requests
 API_BASE = "https://api.dictionaryapi.dev/api/v2/entries/en"
 MAX_HISTORY = 200
 PAGE_SIZE = 7
-REQUEST_HEADERS = {"User-Agent": "free-dictionary-rofi/1.1"}
+REQUEST_HEADERS = {"User-Agent": "free-dictionary-rofi/1.2"}
 
 HISTORY_FILE = Path.home() / ".local" / "share" / "free-dictionary-rofi" / "history.txt"
+CACHE_DIR = Path.home() / ".cache" / "free-dictionary-rofi"
 
 # Dynamic Noctalia Theme Override
 ROFI_THEME_OVERRIDE = (
@@ -140,33 +145,169 @@ def save_history(term: str) -> None:
         pass
 
 
-def fetch_entries(term: str) -> List[Dict[str, Any]]:
+def clean_html(raw: str) -> str:
+    cleaned = re.sub(r"<[^>]+>", "", raw)
+    cleaned = html.unescape(cleaned)
+    return normalize(cleaned)
+
+
+def get_cache_path(term: str) -> Path:
+    safe_name = quote(term.lower(), safe="").replace("%", "_")
+    return CACHE_DIR / f"{safe_name}.json"
+
+
+def load_cached_entry(term: str) -> Optional[List[Dict[str, Any]]]:
+    cache_file = get_cache_path(term)
+    if not cache_file.exists():
+        return None
+    try:
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
+        if isinstance(data, list) and data:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def save_cached_entry(term: str, entries: List[Dict[str, Any]]) -> None:
+    if not entries:
+        return
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file = get_cache_path(term)
+        cache_file.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def clear_cache() -> None:
+    if CACHE_DIR.exists():
+        try:
+            shutil.rmtree(CACHE_DIR)
+        except Exception:
+            pass
+
+
+def fetch_from_api(term: str) -> Optional[List[Dict[str, Any]]]:
     url = f"{API_BASE}/{quote(term)}"
     try:
-        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=12)
-    except requests.RequestException as exc:
-        show_message(f"Network error:\n\n{exc}")
-        return []
+        resp = requests.get(url, headers=REQUEST_HEADERS, timeout=3.5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return data
+    except Exception:
+        pass
+    return None
 
-    if resp.status_code == 404:
-        return []
 
+def fetch_from_wiktionary(term: str) -> Optional[List[Dict[str, Any]]]:
+    variants = [term]
+    if term.lower() not in variants:
+        variants.append(term.lower())
+    if term.capitalize() not in variants:
+        variants.append(term.capitalize())
+
+    data = None
+    matched_word = term
+    for variant in variants:
+        url = f"https://en.wiktionary.org/api/rest_v1/page/definition/{quote(variant)}"
+        try:
+            r = requests.get(url, headers=REQUEST_HEADERS, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                matched_word = variant
+                break
+        except requests.RequestException:
+            continue
+
+    if not data or "en" not in data:
+        return None
+
+    meanings: List[Dict[str, Any]] = []
+    for item in data.get("en", []):
+        pos = as_text(item.get("partOfSpeech"))
+        defs: List[Dict[str, Any]] = []
+        for d in item.get("definitions", []):
+            raw_def = as_text(d.get("definition"))
+            cleaned_def = clean_html(raw_def)
+            if not cleaned_def:
+                continue
+
+            example = ""
+            ex_list = d.get("parsedExamples") or d.get("examples") or []
+            if ex_list:
+                first = ex_list[0]
+                if isinstance(first, dict):
+                    example = clean_html(as_text(first.get("example")))
+                elif isinstance(first, str):
+                    example = clean_html(as_text(first))
+
+            defs.append({
+                "definition": cleaned_def,
+                "example": example,
+                "synonyms": [],
+                "antonyms": [],
+            })
+
+        if defs:
+            meanings.append({
+                "partOfSpeech": pos,
+                "definitions": defs,
+            })
+
+    if not meanings:
+        return None
+
+    phonetic = ""
     try:
-        resp.raise_for_status()
-    except requests.HTTPError as exc:
-        show_message(f"Dictionary API error ({resp.status_code}):\n\n{exc}")
-        return []
+        dm_url = f"https://api.datamuse.com/words?sp={quote(term)}&md=dr&ipa=1&max=1"
+        dm_resp = requests.get(dm_url, timeout=2)
+        if dm_resp.status_code == 200:
+            dm_data = dm_resp.json()
+            if dm_data and isinstance(dm_data, list):
+                for tag in dm_data[0].get("tags", []):
+                    if tag.startswith("ipa_pron:"):
+                        phonetic = "/" + tag.split(":", 1)[1].strip() + "/"
+                        break
+    except Exception:
+        pass
 
+    return [{
+        "word": matched_word,
+        "phonetic": phonetic,
+        "phonetics": [{"text": phonetic}] if phonetic else [],
+        "origin": "",
+        "meanings": meanings,
+    }]
+
+
+def fetch_entries(term: str) -> Optional[List[Dict[str, Any]]]:
+    # 1. Local disk cache (fast and offline-friendly)
+    cached = load_cached_entry(term)
+    if cached:
+        return cached
+
+    # 2. Primary Free Dictionary API
+    entries = fetch_from_api(term)
+    if entries:
+        save_cached_entry(term, entries)
+        return entries
+
+    # 3. Fast, reliable Wiktionary fallback
+    entries = fetch_from_wiktionary(term)
+    if entries:
+        save_cached_entry(term, entries)
+        return entries
+
+    # 4. Check whether host is completely offline
     try:
-        data = resp.json()
-    except ValueError as exc:
-        show_message(f"Failed to parse dictionary response:\n\n{exc}")
-        return []
+        requests.get("https://en.wiktionary.org", timeout=3)
+    except Exception:
+        show_message("Network error:\n\nCould not reach dictionary services. Please check your internet connection.")
+        return None
 
-    if not isinstance(data, list):
-        return []
-
-    return data
+    return []
 
 
 def build_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -177,6 +318,12 @@ def build_rows(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         phonetic = as_text(entry.get("phonetic"))
         origin = as_text(entry.get("origin"))
         phonetics = entry.get("phonetics", [])
+        if not phonetic and isinstance(phonetics, list):
+            for ph in phonetics:
+                if isinstance(ph, dict) and ph.get("text"):
+                    phonetic = as_text(ph.get("text"))
+                    break
+
         meanings = entry.get("meanings", [])
 
         if not isinstance(meanings, list):
@@ -305,6 +452,10 @@ def choose_term() -> Optional[str]:
                 pass
             show_message("History cleared.")
             return None
+        if args[0] in {"--clear-cache", "-c"}:
+            clear_cache()
+            show_message("Cache cleared.")
+            return None
         return normalize(" ".join(args))
 
     history = load_history()
@@ -320,6 +471,8 @@ def main() -> int:
     save_history(term)
 
     entries = fetch_entries(term)
+    if entries is None:
+        return 0
     if not entries:
         show_message(f"No results found for:\n\n{term}")
         return 0
