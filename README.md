@@ -33,8 +33,10 @@ If it doesn't work due to theme errors, disable the shown block by commenting it
 <img width="1761" height="370" alt="image" src="https://github.com/user-attachments/assets/d0f9355b-7133-44b6-a72a-48f0787f1c2c" />
 
 ----------------------------------------------------------------
-Search History is saved at `~/.local/share/free-dictionary-rofi/history.txt`
+Search History is saved at `~/.local/share/free-dictionary-rofi/history.txt`.
+
 If Free Dictionary API fails, it falls back to Wikitionary.
+
 Recommended to symlink somewhere easier to access, it also appears in rofi when free dictionary script is ran.
 
 ----------------------------------------------
